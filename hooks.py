@@ -20,8 +20,8 @@ def h(options, buildout):
     print "Running cmake %s" % options["cmake-options"]
     #os.makedirs('bld')
     #os.chdir('bld')
-    os.system("cmake %s" % options["cmake-options"])
-    os.system('cmake -G "Unix Makefiles"')
+    os.system("cmake %s   " % options["cmake-options"])
+    os.system('cmake %s  -G "Unix Makefiles"' % options['cmake-options'])
     print "Building"
     #os.system("make")
     os.chdir(cwd)
