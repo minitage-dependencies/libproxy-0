@@ -1,0 +1,12 @@
+diff -ur libproxy-0.4.7/cmake/paths.cmk libproxy-0.4.7.n//cmake/paths.cmk
+--- libproxy-0.4.7/cmake/paths.cmk	2011-06-06 23:44:37.221019453 +0200
++++ libproxy-0.4.7.n//cmake/paths.cmk	2012-01-18 16:55:09.075359153 +0100
+@@ -7,7 +7,7 @@
+   set(SYSCONF_INSTALL_DIR  .                CACHE PATH "Configuration install dir")
+   set(SHARE_INSTALL_DIR    .                CACHE PATH "Data install dir")
+ else(WIN32)
+-  set(CMAKE_INSTALL_PREFIX /usr/local       CACHE PATH "Install prefix")
++  set(CMAKE_INSTALL_PREFIX /       CACHE PATH "Install prefix")
+   set(BIN_INSTALL_DIR      bin              CACHE PATH "Binary install dir")
+   set(LIB_INSTALL_DIR      lib${LIB_SUFFIX} CACHE PATH "Library install dir")
+   set(LIBEXEC_INSTALL_DIR  libexec          CACHE PATH "Private executable install dir")
