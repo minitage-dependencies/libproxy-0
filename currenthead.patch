@@ -1,0 +1,1446 @@
+Index: trunk/bindings/python/libproxy.py
+===================================================================
+--- trunk/bindings/python/libproxy.py	(révision 813)
++++ trunk/bindings/python/libproxy.py	(révision 846)
+@@ -25,21 +25,23 @@
+ 
+ import sys
+ 
++def _load(name, *versions):
++    for ver in versions:
++        try: return ctypes.cdll.LoadLibrary('lib%s.so.%s' % (name, ver))
++        except: pass
++    name_ver = ctypes.util.find_library(name)
++    if name_ver:
++        return ctypes.cdll.LoadLibrary(name_ver)
++    raise ImportError("Unable to find %s library" % name)
++
+ # Load C library
+ if platform.system() == "Windows":
+     _libc = ctypes.cdll.msvcrt
+ else:
+-    if not ctypes.util.find_library("c"):
+-        raise ImportError("Unable to import C Library!?!")
+-    _libc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("c"))
++    _libc = _load("c", 6)
+ 
+-
+ # Load libproxy
+-if not ctypes.util.find_library("proxy"):
+-    raise ImportError("Unable to import libproxy!?!?")
+-
+-
+-_libproxy = ctypes.cdll.LoadLibrary(ctypes.util.find_library("proxy"))
++_libproxy = _load("proxy", 1)
+ _libproxy.px_proxy_factory_get_proxies.restype = ctypes.POINTER(ctypes.c_void_p)
+ 
+ class ProxyFactory(object):
+@@ -121,5 +123,6 @@
+         return proxies
+         
+     def __del__(self):
+-        _libproxy.px_proxy_factory_free(self._pf)
++        if _libproxy:
++            _libproxy.px_proxy_factory_free(self._pf)
+     
+Index: trunk/libmodman/CMakeLists.txt
+===================================================================
+--- trunk/libmodman/CMakeLists.txt	(révision 813)
++++ trunk/libmodman/CMakeLists.txt	(révision 846)
+@@ -12,7 +12,7 @@
+             module_manager.hpp
+             module_manager.cpp)
+ if(NOT WIN32)
+-  target_link_libraries(modman dl)
++	target_link_libraries(modman ${CMAKE_DL_LIBS})
+ endif()
+ 
+ ### Tests
+Index: trunk/samples/vala/sample.vala
+===================================================================
+--- trunk/samples/vala/sample.vala	(révision 813)
++++ trunk/samples/vala/sample.vala	(révision 846)
+@@ -2,7 +2,7 @@
+ 
+ void main () {
+ 	var pf = new ProxyFactory ();
+-	string[] proxies = pf.get_proxies ("http://www.googe.com");
++	string[] proxies = pf.get_proxies ("http://www.google.com");
+ 	foreach (string proxy in proxies) {
+ 		stdout.printf ("%s\n", proxy);
+ 	}
+Index: trunk/INSTALL
+===================================================================
+--- trunk/INSTALL	(révision 813)
++++ trunk/INSTALL	(révision 846)
+@@ -68,6 +68,13 @@
+ Boolean options:
+ ================
+ 
++BIPR:                   Default to ON. Build Internal Pac Runner.
++                        If only one pacrunner is to be built, then the default
++                        is to link it internal to libproxy. As soon as two are
++                        to be built, they are always made as a module.
++                        Setting this to OFF allows to build a pacrunner as
++                        module even if only one is to be built.
++
+ FORCE_SYSTEM_LIBMODMAN: Default to OFF. Forces the build system to generate an
+                         error if libmodman cannot be found on your system. By
+                         default libmodman will fallback to using internal copy
+@@ -79,8 +86,11 @@
+ 
+ WITH_DOTNET:            Default to OFF. Enable Mono .NET bindings.
+ 
+-WITH_GNOME:             Default to ON. Enable Gnome/GConf bindings.
++WITH_GNOME:             Default to ON. Enable Gnome2/GConf bindings.
+ 
++WITH_GNOME3:            Default to ON. Build the Gnome3/GSettings bindings.
++                        instead of Gnome2/GConf based one.
++
+ WITH_KDE4:              Default to ON. Enables KDE4/Kconf bindings.
+ 
+ WITH_MOZJS:             Default to ON. Enable Mozilla javascript bindings. As
+@@ -98,7 +108,9 @@
+ 
+ WITH_WEBKIT:            Default to ON. Enable Webkit Java Script engine.
+ 
++WITH_WEBKIT3:           Default to OFF: Enable Webkit GTK3 support.
+ 
++
+ Bindings Path:
+ ==============
+ 
+@@ -126,7 +138,7 @@
+ CFLAGS in libproxy:
+ ===================
+ 
+-We are currently having issue with CMake and CFLAGS. As show in the example,
++We are currently having issue with CMake and CFLAGS. As shown in the example,
+ we have found a simple way that prevents CMAKE from choosing for you the
+ CFLAGS you want. As being demonstrated, you can disable CMAKE default CFLAGS
+ by setting an invalid (but not empty) CMAKE_BUILD_TYPE (e.g. None). You can
+Index: trunk/libproxy/test/url-test.cpp
+===================================================================
+--- trunk/libproxy/test/url-test.cpp	(révision 813)
++++ trunk/libproxy/test/url-test.cpp	(révision 846)
+@@ -145,7 +145,29 @@
+ 		   "", 80,
+ 		   "");
+ 
++  /* Check windows style URL */
++  try_url ("file:///E:/dir/file.pac", rtv,
++		  "file",
++		  "", "",
++		  "", 0,
+ #ifdef WIN32
++          "E:\\dir\\file.pac");
++#else
++          "/E:/dir/file.pac");
++#endif
++
++  /* UNC windows URL */
++  try_url ("file://server/dir/file.pac", rtv,
++		  "file",
++		  "", "",
++		  "server", 0,
++#ifdef WIN32
++          "\\\\server\\dir\\file.pac");
++#else
++          "/dir/file.pac");
++#endif
++
++#ifdef WIN32
+   WSACleanup();
+ #endif
+   
+Index: trunk/libproxy/cmake/pkgconfig.cmk
+===================================================================
+--- trunk/libproxy/cmake/pkgconfig.cmk	(révision 813)
++++ trunk/libproxy/cmake/pkgconfig.cmk	(révision 846)
+@@ -3,7 +3,7 @@
+ 
+   # Define our magical px_check_modules function
+   function(px_check_modules name)
+-    if(PKG_CONFIG_FOUND)
++    if(PKG_CONFIG_EXECUTABLE)
+       option(WITH_${name} "Search for ${name} package" ON)
+       if (WITH_${name})
+         pkg_check_modules(${name} ${ARGN})
+Index: trunk/libproxy/cmake/libproxy.cmk
+===================================================================
+--- trunk/libproxy/cmake/libproxy.cmk	(révision 813)
++++ trunk/libproxy/cmake/libproxy.cmk	(révision 846)
+@@ -2,7 +2,7 @@
+ if(WIN32)
+   target_link_libraries(libproxy modman;ws2_32;${LIBPROXY_LIBRARIES})
+ else()
+-  target_link_libraries(libproxy modman;m;pthread;dl;${LIBPROXY_LIBRARIES})
++  target_link_libraries(libproxy modman;m;pthread;${CMAKE_DL_LIBS};${LIBPROXY_LIBRARIES})
+ endif()
+ file(TO_NATIVE_PATH ${MODULE_INSTALL_DIR} MODULE_INSTALL_DIR)
+ if(WIN32)
+@@ -17,6 +17,7 @@
+ 
+ set_property(SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/proxy.cpp
+              PROPERTY COMPILE_DEFINITIONS MODULEDIR="${MODULEDIR}";BUILTIN_MODULES=${BUILTIN_MODULES})
++# When changing the SOVERSION here remember to also bump the 'favorite proxy .so' in python bindings.
+ set_target_properties(libproxy PROPERTIES PREFIX "" VERSION 1.0.0 SOVERSION 1)
+ set_target_properties(libproxy PROPERTIES LINK_INTERFACE_LIBRARIES "")
+ install(TARGETS libproxy DESTINATION ${LIB_INSTALL_DIR})
+Index: trunk/libproxy/cmake/modules.cmk
+===================================================================
+--- trunk/libproxy/cmake/modules.cmk	(révision 813)
++++ trunk/libproxy/cmake/modules.cmk	(révision 846)
+@@ -19,7 +19,7 @@
+ include(cmake/modules/pacrunner_webkit.cmk)
+ 
+ # Build the pacrunner into libproxy unless we are building for multiple engines
+-set(BIPR 1)
++set(BIPR 1 CACHE BOOL "Build internal pacrunner? (Always false when building more than one PR")
+ if((MOZJS_FOUND AND WEBKIT_FOUND) OR (MOZJS_FOUND AND NATUS_FOUND) OR (WEBKIT_FOUND AND NATUS_FOUND))
+   set(BIPR 0)
+ endif()
+Index: trunk/libproxy/cmake/modules/config_gnome.cmk
+===================================================================
+--- trunk/libproxy/cmake/modules/config_gnome.cmk	(révision 813)
++++ trunk/libproxy/cmake/modules/config_gnome.cmk	(révision 846)
+@@ -1,4 +1,5 @@
+ if (NOT WIN32 AND NOT APPLE)
++  option(WITH_GNOME2 "Target a GNOME 2 system (gconf)" OFF)
+   option(WITH_GNOME3 "Target a GNOME 3 system (gsettings)" ON)
+   if(WITH_GNOME3)
+     px_check_modules(GNOME3 gio-2.0>=2.26 gobject-2.0)
+Index: trunk/libproxy/cmake/modules/pacrunner_mozjs.cmk
+===================================================================
+--- trunk/libproxy/cmake/modules/pacrunner_mozjs.cmk	(révision 813)
++++ trunk/libproxy/cmake/modules/pacrunner_mozjs.cmk	(révision 846)
+@@ -7,19 +7,15 @@
+     include_directories("${MOZJS_INCLUDE_DIR}")
+   endif()
+ elseif(NOT APPLE)
+-  set(MOZJS_SEARCH_ORDER "mozilla-js;xulrunner-js;firefox-js;seamonkey-js" CACHE STRING "MozJS search order")
+   option(WITH_MOZJS "Search for MOZJS package" ON)
+   if (WITH_MOZJS)
+-    foreach(MOZJSLIB ${MOZJS_SEARCH_ORDER})
+-      pkg_search_module(MOZJS ${MOZJSLIB}>=2.0b12)
+-      if(MOZJS_FOUND)
+-        include_directories(${MOZJS_INCLUDE_DIRS})
+-        link_directories(${MOZJS_LIBRARY_DIRS})
+-        break()
+-      else()
+-        set(MOZJS_FOUND 0)
+-      endif()
+-    endforeach()
++    pkg_search_module(MOZJS mozjs185>=1.8.5)
++    if(MOZJS_FOUND)
++      include_directories(${MOZJS_INCLUDE_DIRS})
++      link_directories(${MOZJS_LIBRARY_DIRS})
++    else()
++      set(MOZJS_FOUND 0)
++    endif()
+   else()
+     set(MOZJS_FOUND 0)
+   endif()
+Index: trunk/libproxy/cmake/modules/pacrunner_webkit.cmk
+===================================================================
+--- trunk/libproxy/cmake/modules/pacrunner_webkit.cmk	(révision 813)
++++ trunk/libproxy/cmake/modules/pacrunner_webkit.cmk	(révision 846)
+@@ -13,7 +13,10 @@
+   endif()
+ else()
+   if(WITH_WEBKIT3)
+-    px_check_modules(WEBKIT webkitgtk-3.0)
++    px_check_modules(WEBKIT "javascriptcoregtk-3.0 >= 1.5.0")
++    if(NOT WEBKIT_LIBRARIES)
++      px_check_modules(WEBKIT "webkitgtk-3.0 < 1.5.0")
++    endif(NOT WEBKIT_LIBRARIES)
+   else()
+     px_check_modules(WEBKIT webkit-1.0)
+   endif()
+Index: trunk/libproxy/cmake/devfiles.cmk
+===================================================================
+--- trunk/libproxy/cmake/devfiles.cmk	(révision 813)
++++ trunk/libproxy/cmake/devfiles.cmk	(révision 846)
+@@ -1,4 +1,4 @@
+-if(NOT WIN32 AND NOT APPLE)
++if(NOT WIN32)
+   # PkgConfig file
+   set (PKGCONFIG_PREFIX ${CMAKE_INSTALL_PREFIX})
+   
+Index: trunk/libproxy/extension_config.cpp
+===================================================================
+--- trunk/libproxy/extension_config.cpp	(révision 813)
++++ trunk/libproxy/extension_config.cpp	(révision 846)
+@@ -20,11 +20,11 @@
+ #include "extension_config.hpp"
+ using namespace libproxy;
+ 
+-string config_extension::get_ignore(url) {
++string config_extension::get_ignore(const url&) {
+ 	return "";
+ }
+ 
+-bool config_extension::set_creds(url, string, string) {
++bool config_extension::set_creds(const url&, const string&, const string&) {
+ 	return false;
+ }
+ 
+Index: trunk/libproxy/url.cpp
+===================================================================
+--- trunk/libproxy/url.cpp	(révision 813)
++++ trunk/libproxy/url.cpp	(révision 846)
+@@ -33,6 +33,7 @@
+ #include <cstdlib>    // For atoi()
+ #include <sys/stat.h> // For stat()
+ #include <algorithm> // For transform()
++#include <unistd.h>  // For read() close()
+ 
+ #ifdef WIN32
+ #include <io.h>
+@@ -211,6 +212,8 @@
+ 				host_end = string::npos;
+ 		} else {
+ 			host_end = hier_part.find(':', host_start);
++                        if (path_start < host_end)
++                            host_end = path_start;
+ 		}
+ 
+ 		/* If not port, host ends where path starts */
+@@ -446,7 +449,7 @@
+ 		/* Check for correct mime type and content length */
+ 		for (line = recvline(sock) ; line != "\r" && line != "" ; line = recvline(sock)) {
+ 			// Check for chunked encoding
+-			if (line.find("Content-Transfer-Encoding: chunked") == 0)
++			if (line.find("Content-Transfer-Encoding: chunked") == 0 || line.find("Transfer-Encoding: chunked") == 0)
+ 				chunked = true;
+ 
+ 			// Check for content length
+Index: trunk/libproxy/extension_config.hpp
+===================================================================
+--- trunk/libproxy/extension_config.hpp	(révision 813)
++++ trunk/libproxy/extension_config.hpp	(révision 846)
+@@ -31,11 +31,11 @@
+ class DLL_PUBLIC config_extension : public extension<config_extension> {
+ public:
+ 	// Abstract methods
+-	virtual url      get_config(url dst) throw (runtime_error)=0;
++	virtual vector<url>      get_config(const url &dst) throw (runtime_error)=0;
+ 
+ 	// Virtual methods
+-	virtual string   get_ignore(url dst);
+-	virtual bool     set_creds(url proxy, string username, string password);
++	virtual string   get_ignore(const url &dst);
++	virtual bool     set_creds(const url &proxy, const string &username, const string &password);
+ 
+ 	// Final methods
+ 	        bool     get_valid();
+Index: trunk/libproxy/proxy.cpp
+===================================================================
+--- trunk/libproxy/proxy.cpp	(révision 813)
++++ trunk/libproxy/proxy.cpp	(révision 846)
+@@ -59,7 +59,13 @@
+ 	void lock();
+ 	void unlock();
+ 
+-	void _get_proxies(url *realurl, vector<string> &response);
++	void check_network_topology();
++	void get_config(url &realurl, vector<url> &configs, string &ignore);
++	bool is_ignored(url &realurl, const string &ignore);
++	bool expand_wpad(const url &confurl);
++	bool expand_pac(url &configurl);
++	void run_pac(url &realurl, const url &confurl, vector<string> &response);
++	void clear_cache();
+ 
+ #ifdef WIN32
+ 	HANDLE mutex;
+@@ -70,6 +76,7 @@
+ 	char*  pac;
+ 	url*   pacurl;
+ 	bool   wpad;
++	bool   debug;
+ };
+ 
+ static bool istringcmp(string a, string b) {
+@@ -79,18 +86,17 @@
+ }
+ 
+ // Convert the PAC formatted response into our proxy URL array response
+-static vector<string>
+-format_pac_response(string response)
++static void format_pac_response(string response, vector<string> &retval)
+ {
+-	vector<string> retval;
+-
+ 	// Skip ahead one character if we start with ';'
+-	if (response[0] == ';')
+-		return format_pac_response(response.substr(1));
++	if (response[0] == ';') {
++		format_pac_response(response.substr(1), retval);
++		return;
++	}
+ 
+ 	// If the string contains a delimiter (';')
+ 	if (response.find(';') != string::npos) {
+-		retval   = format_pac_response(response.substr(response.find(';')+1));
++		format_pac_response(response.substr(response.find(';') + 1), retval);
+ 		response = response.substr(0, response.find(';'));
+ 	}
+ 
+@@ -115,12 +121,12 @@
+ 		retval.insert(retval.begin(), string("socks://") + server);
+ 	else if (istringcmp(method, "socks4") && url::is_valid("http://" + server))
+ 		retval.insert(retval.begin(), string("socks4://") + server);
++	else if (istringcmp(method, "socks4a") && url::is_valid("http://" + server))
++		retval.insert(retval.begin(), string("socks4a://") + server);
+ 	else if (istringcmp(method, "socks5") && url::is_valid("http://" + server))
+ 		retval.insert(retval.begin(), string("socks5://") + server);
+ 	else if (istringcmp(method, "direct"))
+ 		retval.insert(retval.begin(), string("direct://"));
+-
+-	return retval;
+ }
+ 
+ proxy_factory::proxy_factory() {
+@@ -159,6 +165,8 @@
+ 	this->mm.load_dir(module_dir);
+ 	this->mm.load_dir(module_dir, false);
+ 
++	this->debug  = (getenv("_PX_DEBUG") != NULL);
++
+ 	unlock();
+ }
+ 
+@@ -179,25 +187,42 @@
+ }
+ 
+ 
+-vector<string> proxy_factory::get_proxies(string url_) {
+-	url*                       realurl = NULL;
++vector<string> proxy_factory::get_proxies(string realurl) {
+ 	vector<string>             response;
+ 
+ 	// Check to make sure our url is valid
+-	if (!url::is_valid(url_))
++	if (!url::is_valid(realurl))
+ 		goto do_return;
+-	realurl = new url(url_);
+ 
+ 	lock();
+ 
+ 	// Let trap and forward exceptions so we don't deadlock
+ 	try {
+-		_get_proxies(realurl, response);
++		vector<url> configs;
++		string ignore;
++		url dst(realurl);
++
++		check_network_topology();
++		get_config(dst, configs, ignore);
++		
++		if (debug) cerr << "Config is: " << endl;
++
++		for (vector<url>::iterator i=configs.begin() ; i != configs.end() ; i++) {
++			url confurl(*i);
++
++			if (debug) cerr << "\t" << confurl.to_string() << endl;
++
++			if (expand_wpad(confurl) || expand_pac(confurl)) {
++				run_pac(dst, confurl, response);
++			} else {
++				clear_cache();
++				response.push_back(confurl.to_string());
++			}
++		}
++
+ 		unlock();
+-		if (realurl) delete realurl;
+ 	} catch (exception &e) {
+ 		unlock();
+-		if (realurl) delete realurl;
+ 		throw e;
+ 	}
+ 
+@@ -207,17 +232,9 @@
+ 	return response;
+ }
+ 
+-void proxy_factory::_get_proxies(url *realurl, vector<string> &response) {
+-	url                        confurl("direct://");
+-	bool                       ignored = false, invign = false;
+-	string                     confign;
+-	config_extension*          config = NULL;
++void proxy_factory::check_network_topology() {
+ 	vector<network_extension*> networks;
+-	vector<config_extension*>  configs;
+-	vector<ignore_extension*>  ignores;
+-	const char*                debug = getenv("_PX_DEBUG");
+ 
+-
+ 	// Check to see if our network topology has changed...
+ 	networks = this->mm.get_extensions<network_extension>();
+ 	for (vector<network_extension*>::iterator i=networks.begin() ; i != networks.end() ; i++) {
+@@ -232,33 +249,41 @@
+ 			break;
+ 		}
+ 	}
++}
+ 
++void proxy_factory::get_config(url &realurl, vector<url> &config, string &ignore) {
++	vector<config_extension*>  configs;
++
+ 	configs = this->mm.get_extensions<config_extension>();
+ 	for (vector<config_extension*>::iterator i=configs.begin() ; i != configs.end() ; i++) {
+-		config = *i;
++		config_extension *configurator = *i;
+ 
+-		// Try to get the confurl
++		// Try to get the configuration
+ 		try {
+-			confurl = config->get_config(*realurl);
+-			confign = config->get_ignore(*realurl);
+-			config->set_valid(true);
++			ignore = configurator->get_ignore(realurl);
++			if (!is_ignored(realurl, ignore))
++				config = configurator->get_config(realurl);
++			if (debug) {
++				if (configurator) {
++					cerr << "Configuration extension is: " << typeid(*configurator).name() << endl;
++					cerr << "Ingored list is: " << ignore << endl;
++				} else {
++					cerr << "No configuration extension found." << endl;
++				}
++			}
+ 			break;
+ 		}
+ 		catch (runtime_error e) {
+-			confurl = "direct://";
+-			confign = "";
+-			config->set_valid(false);
+-			config = NULL;
++			ignore = "";
+ 		}
+ 	}
+-	if (debug) {
+-		if (config)
+-			cerr << "Using config: " << typeid(*config).name() << endl;
+-		else
+-			cerr << "Using config: NULL" << endl;
+-		cerr << "Using ignore: " << confign << endl;
+-	}
++}
+ 
++bool proxy_factory::is_ignored(url &realurl, const string &ignore) {
++	vector<ignore_extension*>  ignores;
++	bool                       ignored = false, invign = false;
++	string                     confign = ignore;
++
+ 	/* Check our ignore patterns */
+ 	ignores = this->mm.get_extensions<ignore_extension>();
+ 	invign  = confign.size() > 0 && confign[0] == '-';
+@@ -268,17 +293,24 @@
+ 		if (next == string::npos) next = confign.length();
+ 		if (next > (i+1)) {
+ 			string ignorestr = confign.substr (i, next - i);
++			ignorestr = ignorestr.substr(ignorestr.find_first_not_of(" \t\n"), ignorestr.find_last_not_of(" \t\n")+1);
+ 			for (vector<ignore_extension*>::iterator it=ignores.begin() ; it != ignores.end() && !ignored ; it++)
+-				ignored = ((*it)->ignore(*realurl, ignorestr));
++				ignored = ((*it)->ignore(realurl, ignorestr));
+ 		}
+ 		i = next+1;
+ 	}
+-	if (!ignored && invign) return;
+-	if (ignored && !invign) return;
+ 
+-	/* If we have a wpad config */
+-	if (debug) cerr << "Config is: " << confurl.to_string() << endl;
++	if (invign)
++		return !ignored;
++	else
++		return ignored;
++}
++
++bool proxy_factory::expand_wpad(const url &confurl)
++{
++	bool rtv = false;
+ 	if (confurl.get_scheme() == "wpad") {
++		rtv = true;
+ 		/* If the config has just changed from PAC to WPAD, clear the PAC */
+ 		if (!this->wpad) {
+ 			if (this->pac)    delete this->pac;
+@@ -330,8 +362,17 @@
+ 		}
+ 	}
+ 
++	return rtv;
++}
++
++bool proxy_factory::expand_pac(url &confurl)
++{
++	bool rtv = false;
++
+ 	// If we have a PAC config
+-	else if (confurl.get_scheme().substr(0, 4) == "pac+") {
++	if (confurl.get_scheme().substr(0, 4) == "pac+") {
++		rtv = true;  
++
+ 		/* Save the PAC config */
+ 		if (this->wpad)
+ 			this->wpad = false;
+@@ -349,15 +390,20 @@
+ 		/* Try to load the PAC if it is not already loaded */
+ 		if (!this->pac) {
+ 			this->pacurl = new url(confurl);
+-			this->pac    = confurl.get_pac();
+-			if (!this->pac) {
+-				if (debug) cerr << "Unable to download PAC!" << endl;
+-				return;
++			this->pac = confurl.get_pac();
++			if (debug) {
++				if (!this->pac)
++					cerr << "Unable to download PAC!" << endl;
++				else
++					cerr << "PAC received!" << endl;
+ 			}
+-			if (debug) cerr << "PAC received!" << endl;
+ 		}
+ 	}
+ 
++	return rtv;
++}
++
++void proxy_factory::run_pac(url &realurl, const url &confurl, vector<string> &response) {
+ 	/* In case of either PAC or WPAD, we'll run the PAC */
+ 	if (this->pac && (confurl.get_scheme() == "wpad" || confurl.get_scheme().substr(0, 4) == "pac+") ) {
+ 		vector<pacrunner_extension*> pacrunners = this->mm.get_extensions<pacrunner_extension>();
+@@ -370,20 +416,16 @@
+ 
+ 		/* Run the PAC, but only try one PACRunner */
+ 		if (debug) cerr << "Using pacrunner: " << typeid(*pacrunners[0]).name() << endl;
+-		string pacresp = pacrunners[0]->get(this->pac, this->pacurl->to_string())->run(*realurl);
++		string pacresp = pacrunners[0]->get(this->pac, this->pacurl->to_string())->run(realurl);
+ 		if (debug) cerr << "Pacrunner returned: " << pacresp << endl;
+-		response = format_pac_response(pacresp);
++		format_pac_response(pacresp, response);
+ 	}
++}
+ 
+-	/* If we have a manual config (http://..., socks://..., etc.) */
+-	else
+-	{
+-		this->wpad = false;
+-		if (this->pac)    { delete this->pac;    this->pac = NULL; }
+-		if (this->pacurl) { delete this->pacurl; this->pacurl = NULL; }
+-		response.clear();
+-		response.push_back(confurl.to_string());
+-	}
++void proxy_factory::clear_cache() {
++	this->wpad = false;
++	if (this->pac)    { delete this->pac;    this->pac = NULL; }
++	if (this->pacurl) { delete this->pacurl; this->pacurl = NULL; }
+ }
+ 
+ void proxy_factory::lock() {
+Index: trunk/libproxy/extension_ignore.hpp
+===================================================================
+--- trunk/libproxy/extension_ignore.hpp	(révision 813)
++++ trunk/libproxy/extension_ignore.hpp	(révision 846)
+@@ -30,7 +30,7 @@
+ 
+ class DLL_PUBLIC ignore_extension : public extension<ignore_extension> {
+ public:
+-	virtual bool ignore(url& dst, string ignorestr)=0;
++	virtual bool ignore(url& dst, const string &ignorestr)=0;
+ };
+ 
+ }
+Index: trunk/libproxy/modules/config_w32reg.cpp
+===================================================================
+--- trunk/libproxy/modules/config_w32reg.cpp	(révision 813)
++++ trunk/libproxy/modules/config_w32reg.cpp	(révision 846)
+@@ -108,22 +108,24 @@
+ 
+ class w32reg_config_extension : public config_extension {
+ public:
+-	url get_config(url dst) throw (runtime_error) {
++	vector<url> get_config(const url &dst) throw (runtime_error) {
+ 		char        *tmp = NULL;
+ 		uint32_t enabled = 0;
++		vector<url> response;
+ 
+ 		// WPAD
+ 		if (is_enabled(W32REG_OFFSET_WPAD)) {
+-			return url("wpad://");
++			response.push_back(url("wpad://"));
++			return response;
+ 		}
+ 
+ 		// PAC
+ 		if (is_enabled(W32REG_OFFSET_PAC) &&
+ 			get_registry(W32REG_BASEKEY, "AutoConfigURL", &tmp, NULL, NULL) &&
+ 			url::is_valid(string("pac+") + tmp)) {
+-			url cfg(string("pac+") + tmp);
++			response.push_back(url(string("pac+") + tmp));
+ 			delete tmp;
+-			return cfg;
++			return response;
+ 		}
+ 
+ 		// Manual proxy
+@@ -135,22 +137,25 @@
+ 
+ 			// First we look for an exact match
+ 			if (manual.find(dst.get_scheme()) != manual.end())
+-				return manual[dst.get_scheme()];
++				response.push_back(manual[dst.get_scheme()]);
+ 
+ 			// Next we look for http
+ 			else if (manual.find("http") != manual.end())
+-				return manual["http"];
++				response.push_back(manual["http"]);
+ 
+ 			// Last we look for socks
+ 			else if (manual.find("socks") != manual.end())
+-				return manual["socks"];
++				response.push_back(manual["socks"]);
++
++			return response;
+ 		}
+ 
+ 		// Direct
+-		return url("direct://");
++		response.push_back(url("direct://"));
++		return response;
+ 	}
+ 
+-	string get_ignore(url dst) {
++	string get_ignore(const url &dst) {
+ 		char *tmp;
+ 		if (get_registry(W32REG_BASEKEY, "ProxyOverride", &tmp, NULL, NULL)) {
+ 			string po = tmp;
+Index: trunk/libproxy/modules/pacrunner_webkit.cpp
+===================================================================
+--- trunk/libproxy/modules/pacrunner_webkit.cpp	(révision 813)
++++ trunk/libproxy/modules/pacrunner_webkit.cpp	(révision 846)
+@@ -18,6 +18,7 @@
+  ******************************************************************************/
+ 
+ #include "../extension_pacrunner.hpp"
++#include <unistd.h> // gethostname
+ using namespace libproxy;
+ 
+ #ifdef __APPLE__
+Index: trunk/libproxy/modules/pxgconf.cpp
+===================================================================
+--- trunk/libproxy/modules/pxgconf.cpp	(révision 813)
++++ trunk/libproxy/modules/pxgconf.cpp	(révision 846)
+@@ -30,7 +30,9 @@
+ 		return printf("false%s", suffix);
+ 	case GCONF_VALUE_LIST:
+ 		cursor = gconf_value_get_list(value);
+-		for ( ; cursor ; cursor = g_slist_next(cursor))
++		if (g_slist_length (cursor) == 0)
++			count += printf("%s", suffix);
++		else for ( ; cursor ; cursor = g_slist_next(cursor))
+ 			count += print_value((const GConfValue *) cursor->data, cursor->next ? "," : suffix);
+ 		return count;
+ 	case GCONF_VALUE_PAIR:
+Index: trunk/libproxy/modules/pacrunner_natus.cpp
+===================================================================
+--- trunk/libproxy/modules/pacrunner_natus.cpp	(révision 813)
++++ trunk/libproxy/modules/pacrunner_natus.cpp	(révision 846)
+@@ -18,6 +18,7 @@
+  ******************************************************************************/
+ 
+ #include "../extension_pacrunner.hpp"
++#include <unistd.h> // gethostname
+ using namespace libproxy;
+ 
+ #define I_ACKNOWLEDGE_THAT_NATUS_IS_NOT_STABLE
+Index: trunk/libproxy/modules/wpad_dns_alias.cpp
+===================================================================
+--- trunk/libproxy/modules/wpad_dns_alias.cpp	(révision 813)
++++ trunk/libproxy/modules/wpad_dns_alias.cpp	(révision 846)
+@@ -22,18 +22,24 @@
+ 
+ class dns_alias_wpad_extension : public wpad_extension {
+ public:
+-	dns_alias_wpad_extension() { rewind(); }
+-	bool found()               { return lastpac != NULL; }
+-	void rewind()              { lasturl = NULL; lastpac = NULL; }
++	dns_alias_wpad_extension() : lasturl(NULL), lastpac(NULL) { }
++	bool found() { return lastpac != NULL; }
++	
++	void rewind() {
++		if (lasturl) delete lasturl;
++		if (lastpac) delete lastpac;
++		lasturl = NULL;
++		lastpac = NULL;
++	}
+ 
+ 	url* next(char** pac) {
+-		if (lasturl) return false;
++		if (lasturl) return NULL;
+ 
+ 		lasturl = new url("http://wpad/wpad.dat");
+ 		lastpac = *pac = lasturl->get_pac();
+ 		if (!lastpac) {
+-			delete lasturl;
+-			return NULL;
++		    delete lasturl;
++		    return NULL;
+ 		}
+ 
+ 		return lasturl;
+Index: trunk/libproxy/modules/ignore_domain.cpp
+===================================================================
+--- trunk/libproxy/modules/ignore_domain.cpp	(révision 813)
++++ trunk/libproxy/modules/ignore_domain.cpp	(révision 846)
+@@ -24,7 +24,7 @@
+ 
+ class domain_ignore_extension : public ignore_extension {
+ public:
+-	virtual bool ignore(url& url, string ignorestr) {
++	virtual bool ignore(url& url, const string &ignorestr) {
+ 		/* Get our URL's hostname and port */
+ 		string host = url.get_host();
+ 		int    port = url.get_port();
+Index: trunk/libproxy/modules/ignore_ip.cpp
+===================================================================
+--- trunk/libproxy/modules/ignore_ip.cpp	(révision 813)
++++ trunk/libproxy/modules/ignore_ip.cpp	(révision 846)
+@@ -90,7 +90,7 @@
+ 	/* IPv4 */
+ 	if (af == AF_INET)
+ 	{
+-		sockaddr_in *mask = new sockaddr_in;
++		sockaddr_in *mask = (sockaddr_in*) new char[sizeof(sockaddr_in)];
+ 		mask->sin_family = af;
+ 		mask->sin_addr.s_addr = htonl(~0 << (32 - (cidr > 32 ? 32 : cidr)));
+ 
+@@ -100,7 +100,7 @@
+ 	/* IPv6 */
+ 	else if (af == AF_INET6)
+ 	{
+-		sockaddr_in6 *mask = new sockaddr_in6;
++		sockaddr_in6 *mask = (sockaddr_in6*) new char[sizeof(sockaddr_in6)];
+ 		mask->sin6_family = af;
+ 		for (uint8_t i=0 ; i < sizeof(mask->sin6_addr) ; i++)
+ 			mask->sin6_addr.s6_addr[i] = ~0 << (8 - (8*i > cidr ? 0 : cidr-8*i < 8 ? cidr-8*i : 8) );
+@@ -113,7 +113,7 @@
+ 
+ class ip_ignore_extension : public ignore_extension {
+ public:
+-	virtual bool ignore(url& url, string ignore) {
++	virtual bool ignore(url& url, const string &ignore) {
+ 		bool result   = false;
+ 		uint16_t port = 0;
+ 		const struct sockaddr *dst_ip = url.get_ips(false) ? url.get_ips(false)[0] : NULL;
+@@ -154,8 +154,8 @@
+ 			if (ign_ip && net_ip && ign_ip->sa_family == net_ip->sa_family)
+ 				goto out;
+ 
+-			delete ign_ip;
+-			delete net_ip;
++			delete[] ign_ip;
++			delete[] net_ip;
+ 			ign_ip = NULL;
+ 			net_ip = NULL;
+ 		}
+Index: trunk/libproxy/modules/config_kde4.cpp
+===================================================================
+--- trunk/libproxy/modules/config_kde4.cpp	(révision 813)
++++ trunk/libproxy/modules/config_kde4.cpp	(révision 846)
+@@ -46,9 +46,11 @@
+ 		delete this->cfg;
+ 	}
+ 
+-	url get_config(url dst) throw (runtime_error) {
++	vector<url> get_config(const url &dst) throw (runtime_error) {
+ 		string  tmp;
+ 		QString prxy;
++		vector<url> response;
++
+ 		switch (this->grp->readEntry("ProxyType", 0)) {
+ 			case 1: // Use a manual proxy
+ 				prxy = this->grp->readEntry(QString(dst.get_scheme().c_str()) + "Proxy", "");
+@@ -62,26 +64,31 @@
+ 				};
+ 				// The result of toLatin1() is undefined for non-Latin1 strings.
+ 				// However, KDE saves this entry using IDN and percent-encoding, so no problem...
+-				return string(prxy.toLatin1().data());
++				response.push_back(string(prxy.toLatin1().data()));
++				break;
+ 			case 2: // Use a manual PAC
+ 				// The result of toLatin1() is undefined for non-Latin1 strings.
+ 				// However, KDE saves this entry using IDN and percent-encoding, so no problem...
+ 				tmp = string(this->grp->readEntry("Proxy Config Script", "").toLatin1().data());
+ 				if (url::is_valid("pac+" + tmp))
+-					return url("pac+" + tmp);
+-				return url("wpad://");
++					response.push_back(url("pac+" + tmp));
++				else
++				  response.push_back(string("wpad://"));
++				break;	
+ 			case 3: // Use WPAD
+-				return url("wpad://");
++				response.push_back(string("wpad://"));
++				break;
+ 			case 4: // Use envvar
+ 				throw runtime_error("User config_envvar"); // We'll bypass this config plugin and let the envvar plugin work
+ 			default:
+-				return url("direct://");
++				response.push_back(url("direct://"));
++				break;
+ 		};
+ 
+-		// Never get here!
++		return response;
+ 	}
+ 
+-	string get_ignore(url /*dst*/) {
++	string get_ignore(const url& /*dst*/) {
+ 		// Apply ignore list only for manual proxy configuration
+ 		if (this->grp->readEntry("ProxyType", 0) == 1)  { 
+ 			string prefix = this->grp->readEntry("ReversedException", false) ? "-" : "";
+Index: trunk/libproxy/modules/config_gnome3.cpp
+===================================================================
+--- trunk/libproxy/modules/config_gnome3.cpp	(révision 813)
++++ trunk/libproxy/modules/config_gnome3.cpp	(révision 846)
+@@ -113,7 +113,7 @@
+ 	}
+ }
+ 
+-static inline uint16_t get_port(string &port)
++static inline uint16_t get_port(const string &port)
+ {
+ 	uint16_t retval;
+ 
+@@ -163,10 +163,28 @@
+ 		kill(this->pid, SIGTERM);
+ 	}
+ 
+-	url get_config(url dest) throw (runtime_error) {
++	void store_response(const string &type,
++						const string &host,
++						const string &port,
++						bool auth,
++						const string &username,
++						const string &password,
++						vector<url> &response) {
++		if (host != "" && get_port(port) != 0) {
++			string tmp = type + "://";
++			if (auth)
++			  tmp += username + ":" + password + "@";
++			tmp += host + ":" + port;
++			response.push_back(url(tmp));
++		}
++	}
++
++	vector<url> get_config(const url &dest) throw (runtime_error) {
+ 		// Check for changes in the config
+ 		fd_set rfds;
+ 		struct timeval timeout = { 0, 0 };
++		vector<url> response;
++
+ 		FD_ZERO(&rfds);
+ 		FD_SET(fileno(this->read), &rfds);
+ 		if (select(fileno(this->read)+1, &rfds, NULL, NULL, &timeout) > 0)
+@@ -175,72 +193,49 @@
+ 		// Mode is wpad:// or pac+http://...
+ 		if (this->data[PROXY_MODE] == "auto") {
+ 			string pac = this->data[PROXY_AUTOCONFIG_URL];
+-			return url::is_valid(pac) ? url(string("pac+") + pac) : url("wpad://");
++			response.push_back(url::is_valid(pac) ? url(string("pac+") + pac) : url("wpad://"));
++			return response;
+ 		}
+ 
+ 		// Mode is http://... or socks://...
+ 		else if (this->data[PROXY_MODE] == "manual") {
+-			string type, host, port;
+ 			bool       auth = this->data[PROXY_USE_AUTHENTICATION] == "true";
+ 			string username = url::encode(this->data[PROXY_AUTH_USER], URL_ALLOWED_IN_USERINFO_ELEMENT);
+ 			string password = url::encode(this->data[PROXY_AUTH_PASSWORD], URL_ALLOWED_IN_USERINFO_ELEMENT);
+-			bool same_proxy = this->data[PROXY_SAME_FOR_ALL] == "true"; 
+-
+-			// If socks is set use it (except when same_proxy is set)
+-			if (!same_proxy) {
+-				type = "socks";
+-				host = this->data[PROXY_SOCKS_HOST];
+-				port = this->data[PROXY_SOCKS_PORT];
+-			}
+ 			
+-			if (host == "" || get_port(port) == 0) {
+-				// Get the per-scheme proxy settings
+-				if (dest.get_scheme() == "http") {
+-						type = "http";
+-						host = this->data[PROXY_HTTP_HOST];
+-						port = this->data[PROXY_HTTP_PORT];
+-				}
+-				else if (dest.get_scheme() == "https") {
+-						// It is expected that the configured server is an
+-						// HTTP server that support CONNECT method.
+-						type = "http";
+-						host = this->data[PROXY_SECURE_HOST];
+-						port = this->data[PROXY_SECURE_PORT];
+-				}
+-				else if (dest.get_scheme() == "ftp") {
+-						// It is expected that the configured server is an
+-						// HTTP server that handles proxying FTP URLs 
+-						// (e.g. request with header "Host: ftp://ftp.host.org")
+-						type = "http";
+-						host = this->data[PROXY_FTP_HOST];
+-						port = this->data[PROXY_FTP_PORT];
+-				}
++			// Get the per-scheme proxy settings
++			if (dest.get_scheme() == "http")
++				store_response("http", this->data[PROXY_HTTP_HOST],
++					this->data[PROXY_HTTP_PORT], auth, username, password, response);
++			else if (dest.get_scheme() == "https")
++				// It is expected that the configured server is an
++				// HTTP server that support CONNECT method.
++				store_response("http", this->data[PROXY_SECURE_HOST],
++					this->data[PROXY_SECURE_PORT], auth, username, password, response);
++			else if (dest.get_scheme() == "ftp")
++				// It is expected that the configured server is an
++				// HTTP server that handles proxying FTP URLs 
++				// (e.g. request with header "Host: ftp://ftp.host.org")
++				store_response("http", this->data[PROXY_FTP_HOST],
++					this->data[PROXY_FTP_PORT], auth, username, password, response);
+ 
+-				// If no proxy is set and we have the same_proxy option
+-				// enabled try socks at the end only.
+-				if (same_proxy && (host == "" || get_port(port) == 0)) {
+-					type = "socks";
+-					host = this->data[PROXY_SOCKS_HOST];
+-					port = this->data[PROXY_SOCKS_PORT];
+-				}
+-			}
++			store_response("socks", this->data[PROXY_SOCKS_HOST],
++				this->data[PROXY_SOCKS_PORT], auth, username, password, response);
+ 
+-
+-			// If host and port were found, build config url
+-			if (host != "" && get_port(port) != 0) {
+-				string tmp = type + "://";
+-				if (auth)
+-					tmp += username + ":" + password + "@";
+-				tmp += host + ":" + port;
+-				return url(tmp);
++			// In case nothing matched, try HTTP Connect and fallback to direct.
++			// If there is not secure HTTP proxy, this will only add direct:// to
++			// the response
++			if (response.size() == 0 && dest.get_scheme() != "http") {
++				store_response("http", this->data[PROXY_SECURE_HOST],
++					this->data[PROXY_SECURE_PORT], auth, username, password, response);
++				response.push_back(url("direct://"));
+ 			}
+ 		}
+ 
+-		// Mode is direct://
+-		return url("direct://");
++		return response;
+ 	}
+ 
+-	string get_ignore(url) {
++	string get_ignore(const url&) {
+ 		return this->data[PROXY_IGNORE_HOSTS];
+ 	}
+ 
+Index: trunk/libproxy/modules/config_macosx.cpp
+===================================================================
+--- trunk/libproxy/modules/config_macosx.cpp	(révision 813)
++++ trunk/libproxy/modules/config_macosx.cpp	(révision 846)
+@@ -114,40 +114,45 @@
+ 
+ class macosx_config_extension : public config_extension {
+ public:
+-	url get_config(url url) throw (runtime_error) {
++	vector<url> get_config(const url &url) throw (runtime_error) {
+ 		string tmp;
+ 		CFDictionaryRef proxies = SCDynamicStoreCopyProxies(NULL);
++		vector<url> response;
++
+ 		if (!proxies) throw runtime_error("Unable to fetch proxy configuration");
+ 
+ 		// wpad://
+ 		if (getbool(proxies, "ProxyAutoDiscoveryEnable")) {
+ 			CFRelease(proxies);
+-			return libproxy::url(string("wpad://"));
++			response.push_back(url("wpad://"));
+ 		}
+ 
+ 		// pac+http://...
+-		if (getbool(proxies, "ProxyAutoConfigEnable") &&
++		else if (getbool(proxies, "ProxyAutoConfigEnable") &&
+ 		    (tmp = str(getobj<CFStringRef>(proxies, "ProxyAutoConfigURLString"))) != "" &&
+         	    url::is_valid(tmp)) {
+ 			CFRelease(proxies);
+-			return libproxy::url(string("pac+") + tmp);
++			response.push_back(url(string("pac+") + tmp));
+ 		}
+ 
+ 		// http:// or socks:// (TODO: gopher:// and rtsp:// ???)
+-		if ((protocol_url(proxies, toupper(url.get_scheme()), tmp)    && url::is_valid(tmp)) ||
++		else if ((protocol_url(proxies, toupper(url.get_scheme()), tmp)    && url::is_valid(tmp)) ||
+ 		    (protocol_url(proxies, capitalize(url.get_scheme()), tmp) && url::is_valid(tmp)) ||
+ 		    (protocol_url(proxies, toupper("http"), tmp)              && url::is_valid(tmp)) ||
+ 	            (protocol_url(proxies, toupper("socks"), tmp)             && url::is_valid(tmp))) {
+ 			CFRelease(proxies);
+-			return libproxy::url(tmp);
++			response.push_back(url(tmp));
+ 		}
++		else {
++			// direct://
++			CFRelease(proxies);
++			response.push_back(url("direct://"));
++		}
+ 
+-		// direct://
+-		CFRelease(proxies);
+-		return libproxy::url(string("direct://"));
++		return response;
+ 	}
+ 
+-	string get_ignore(url) {
++	string get_ignore(const url&) {
+ 		// Get config dict
+ 		CFDictionaryRef proxies = SCDynamicStoreCopyProxies(NULL);
+ 		if (!proxies) return "";
+Index: trunk/libproxy/modules/pacrunner_mozjs.cpp
+===================================================================
+--- trunk/libproxy/modules/pacrunner_mozjs.cpp	(révision 813)
++++ trunk/libproxy/modules/pacrunner_mozjs.cpp	(révision 846)
+@@ -18,6 +18,7 @@
+  ******************************************************************************/
+ 
+ #include <cstring> // ?
++#include <unistd.h> // gethostname
+ 
+ #include "../extension_pacrunner.hpp"
+ using namespace libproxy;
+@@ -85,7 +86,7 @@
+ 	if (!gethostname(hostname, 1023)) {
+ 		JSString *myhost = JS_NewStringCopyN(cx, hostname, strlen(hostname));
+ 		jsval arg = STRING_TO_JSVAL(myhost);
+-		return dnsResolve_(cx, 1, &arg);
++		return dnsResolve_(cx, arg, vp);
+ 	}
+ 	JS_free(cx, hostname);
+ 	JS_SET_RVAL(cx, vp, JSVAL_NULL);
+Index: trunk/libproxy/modules/ignore_hostname.cpp
+===================================================================
+--- trunk/libproxy/modules/ignore_hostname.cpp	(révision 813)
++++ trunk/libproxy/modules/ignore_hostname.cpp	(révision 846)
+@@ -24,7 +24,7 @@
+ 
+ class hostname_ignore_extension : public ignore_extension {
+ public:
+-	virtual bool ignore(url& url, string ignorestr) {
++	virtual bool ignore(url& url, const string &ignorestr) {
+ 		if (ignorestr == "<local>" &&
+ 			url.get_host().find(':') == string::npos && // Make sure it's not IPv6
+ 			url.get_host().find('.') == string::npos)
+Index: trunk/libproxy/modules/config_envvar.cpp
+===================================================================
+--- trunk/libproxy/modules/config_envvar.cpp	(révision 813)
++++ trunk/libproxy/modules/config_envvar.cpp	(révision 846)
+@@ -24,17 +24,18 @@
+ 
+ class envvar_config_extension : public config_extension {
+ public:
+-	url get_config(url url) throw (runtime_error) {
+-		char *proxy = NULL;
++	vector<url> get_config(const url &dst) throw (runtime_error) {
++		const char *proxy = NULL;
++                vector<url> response;
+ 
+ 		// If the URL is an ftp url, try to read the ftp proxy
+-		if (url.get_scheme() == "ftp") {
++		if (dst.get_scheme() == "ftp") {
+ 			if (!(proxy = getenv("ftp_proxy")))
+ 				proxy = getenv("FTP_PROXY");
+ 		}
+ 
+ 		// If the URL is an https url, try to read the https proxy
+-		if (url.get_scheme() == "https") {
++		if (dst.get_scheme() == "https") {
+ 			if (!(proxy = getenv("https_proxy")))
+ 				proxy = getenv("HTTPS_PROXY");
+ 		}
+@@ -47,10 +48,12 @@
+ 
+ 		if (!proxy)
+ 			throw runtime_error("Unable to read configuration");
+-		return libproxy::url(proxy);
++
++                response.push_back(url(proxy));
++		return response;
+ 	}
+ 
+-	string get_ignore(url) {
++	string get_ignore(const url&) {
+ 		char *ignore = getenv("no_proxy");
+ 		      ignore = ignore ? ignore : getenv("NO_PROXY");
+ 		return string(ignore ? ignore : "");
+Index: trunk/libproxy/modules/config_sysconfig.cpp
+===================================================================
+--- trunk/libproxy/modules/config_sysconfig.cpp	(révision 813)
++++ trunk/libproxy/modules/config_sysconfig.cpp	(révision 846)
+@@ -21,7 +21,10 @@
+ #include <cstdlib>
+ #include <map>
+ #include <fstream>
++#include <unistd.h>
++#include <sys/types.h>
+ 
++
+ #include "../extension_config.hpp"
+ using namespace libproxy;
+ using std::map;
+@@ -121,20 +124,24 @@
+ 	~sysconfig_config_extension() {
+ 	}
+    
+-	url get_config(url url) throw (runtime_error) {
++	vector<url> get_config(const url &dst) throw (runtime_error) {
+ 		map<string,string>::const_iterator it = _data.find("PROXY_ENABLED");
+-		if (it != _data.end() && it->second == "no")
+-			return libproxy::url("direct://");
++		vector<url> response;
++
++		if (it != _data.end() && it->second == "no") {
++			response.push_back(url("direct://"));
++			return response;
++		}
+             
+ 		string key;
+ 		string proxy;
+             
+ 		// If the URL is an ftp url, try to read the ftp proxy
+-		if (url.get_scheme() == "ftp")
++		if (dst.get_scheme() == "ftp")
+ 			key = "FTP_PROXY";
+-		else if (url.get_scheme() == "http")
++		else if (dst.get_scheme() == "http")
+ 			key = "HTTP_PROXY";
+-		else if (url.get_scheme() == "https")
++		else if (dst.get_scheme() == "https")
+ 			key = "HTTPS_PROXY";
+             
+ 		it = _data.find(key);
+@@ -144,10 +151,11 @@
+ 		if (proxy.empty())
+ 			throw runtime_error("Unable to read configuration");
+ 
+-		return libproxy::url(proxy);
++		response.push_back(url(proxy));
++		return response;
+ 	}
+ 
+-	string get_ignore(url) {
++	string get_ignore(const url&) {
+ 		map<string,string>::const_iterator it = _data.find("NO_PROXY");
+ 		if (it != _data.end())
+ 			return it->second;
+Index: trunk/libproxy/modules/config_gnome.cpp
+===================================================================
+--- trunk/libproxy/modules/config_gnome.cpp	(révision 813)
++++ trunk/libproxy/modules/config_gnome.cpp	(révision 846)
+@@ -123,7 +123,7 @@
+ 	}
+ }
+ 
+-static inline uint16_t get_port(string &port)
++static inline uint16_t get_port(const string &port)
+ {
+ 	uint16_t retval;
+ 
+@@ -133,6 +133,22 @@
+ 	return retval;	
+ }
+ 
++void store_response(const string &type,
++	const string &host,
++	const string &port,
++	bool auth,
++	const string &username,
++	const string &password,
++	vector<url> &response) {
++	if (host != "" && get_port(port) != 0) {
++		string tmp = type + "://";
++		if (auth)
++		  tmp += username + ":" + password + "@";
++		tmp += host + ":" + port;
++		response.push_back(url(tmp));
++	}
++}
++
+ class gnome_config_extension : public config_extension {
+ public:
+ 	gnome_config_extension() {
+@@ -173,10 +189,12 @@
+ 		kill(this->pid, SIGTERM);
+ 	}
+ 
+-	url get_config(url dest) throw (runtime_error) {
++	vector<url> get_config(const url &dest) throw (runtime_error) {
+ 		// Check for changes in the config
+ 		fd_set rfds;
+ 		struct timeval timeout = { 0, 0 };
++		vector<url> response;
++
+ 		FD_ZERO(&rfds);
+ 		FD_SET(fileno(this->read), &rfds);
+ 		if (select(fileno(this->read)+1, &rfds, NULL, NULL, &timeout) > 0)
+@@ -185,76 +203,53 @@
+ 		// Mode is wpad:// or pac+http://...
+ 		if (this->data[PROXY_MODE] == "auto") {
+ 			string pac = this->data[PROXY_AUTOCONFIG_URL];
+-			return url::is_valid(pac) ? url(string("pac+") + pac) : url("wpad://");
++			response.push_back(url::is_valid(pac) ? url(string("pac+") + pac) : url("wpad://"));
++			return response;
+ 		}
+ 
+ 		// Mode is http://... or socks://...
+ 		else if (this->data[PROXY_MODE] == "manual") {
+-			string type, host, port;
+ 			bool       auth = this->data[PROXY_USE_AUTHENTICATION] == "true";
+ 			string username = url::encode(this->data[PROXY_AUTH_USER], URL_ALLOWED_IN_USERINFO_ELEMENT);
+ 			string password = url::encode(this->data[PROXY_AUTH_PASSWORD], URL_ALLOWED_IN_USERINFO_ELEMENT);
+-			bool same_proxy = this->data[PROXY_SAME_FOR_ALL] == "true"; 
+-
+-			// If socks is set use it (except when same_proxy is set)
+-			if (!same_proxy) {
+-				type = "socks";
+-				host = this->data[PROXY_SOCKS_HOST];
+-				port = this->data[PROXY_SOCKS_PORT];
+-			}
+ 			
+-			if (host == "" || get_port(port) == 0) {
+-				// Get the per-scheme proxy settings
+-				if (dest.get_scheme() == "http") {
+-						type = "http";
+-						host = this->data[PROXY_HTTP_HOST];
+-						port = this->data[PROXY_HTTP_PORT];
+-				}
+-				else if (dest.get_scheme() == "https") {
+-						// It is expected that the configured server is an
+-						// HTTP server that support CONNECT method.
+-						type = "http";
+-						host = this->data[PROXY_SECURE_HOST];
+-						port = this->data[PROXY_SECURE_PORT];
+-				}
+-				else if (dest.get_scheme() == "ftp") {
+-						// It is expected that the configured server is an
+-						// HTTP server that handles proxying FTP URLs 
+-						// (e.g. request with header "Host: ftp://ftp.host.org")
+-						type = "http";
+-						host = this->data[PROXY_FTP_HOST];
+-						port = this->data[PROXY_FTP_PORT];
+-				}
++			// Get the per-scheme proxy settings
++			if (dest.get_scheme() == "http")
++				store_response("http", this->data[PROXY_HTTP_HOST],
++					this->data[PROXY_HTTP_PORT], auth, username, password, response);
++			else if (dest.get_scheme() == "https")
++				// It is expected that the configured server is an
++				// HTTP server that support CONNECT method.
++				store_response("http", this->data[PROXY_SECURE_HOST],
++					this->data[PROXY_SECURE_PORT], auth, username, password, response);
++			else if (dest.get_scheme() == "ftp")
++				// It is expected that the configured server is an
++				// HTTP server that handles proxying FTP URLs 
++				// (e.g. request with header "Host: ftp://ftp.host.org")
++				store_response("http", this->data[PROXY_FTP_HOST],
++					this->data[PROXY_FTP_PORT], auth, username, password, response);
+ 
+-				// If no proxy is set and we have the same_proxy option
+-				// enabled try socks at the end only.
+-				if (same_proxy && (host == "" || get_port(port) == 0)) {
+-					type = "socks";
+-					host = this->data[PROXY_SOCKS_HOST];
+-					port = this->data[PROXY_SOCKS_PORT];
+-				}
+-			}
++			store_response("socks", this->data[PROXY_SOCKS_HOST],
++				this->data[PROXY_SOCKS_PORT], auth, username, password, response);
+ 
+-
+-			// If host and port were found, build config url
+-			if (host != "" && get_port(port) != 0) {
+-				string tmp = type + "://";
+-				if (auth)
+-					tmp += username + ":" + password + "@";
+-				tmp += host + ":" + port;
+-				return url(tmp);
++			// In case nothing matched, try HTTP Connect and fallback to direct.
++			// If there is not secure HTTP proxy, this will only add direct:// to
++			// the response
++			if (response.size() == 0 && dest.get_scheme() != "http") {
++				store_response("http", this->data[PROXY_SECURE_HOST],
++					this->data[PROXY_SECURE_PORT], auth, username, password, response);
++				response.push_back(url("direct://"));
+ 			}
+ 		}
+ 
+-		// Mode is direct://
+-		return url("direct://");
++		return response;
+ 	}
+ 
+-	string get_ignore(url) {
++	string get_ignore(const url&) {
+ 		return this->data[PROXY_IGNORE_HOSTS];
+ 	}
+ 
+-	bool set_creds(url /*proxy*/, string username, string password) {
++	virtual bool set_creds(url /*proxy*/, string username, string password) {
+ 		string auth = PROXY_USE_AUTHENTICATION "\ttrue\n";
+ 		string user = string(PROXY_AUTH_USER "\t") + username + "\n";
+ 		string pass = string(PROXY_AUTH_PASSWORD "\t") + password + "\n";
+Index: trunk/libproxy/CMakeLists.txt
+===================================================================
+--- trunk/libproxy/CMakeLists.txt	(révision 813)
++++ trunk/libproxy/CMakeLists.txt	(révision 846)
+@@ -6,7 +6,7 @@
+ if (WIN32)
+   add_definitions(-D_CRT_SECURE_NO_WARNINGS=1)
+ else(WIN32)
+-  add_definitions(-D_POSIX_C_SOURCE=1)
++  add_definitions(-D_POSIX_C_SOURCE=200112L)
+   set(CMAKE_CXX_FLAGS "-fvisibility=hidden ${CMAKE_CXX_FLAGS}")
+ endif(WIN32)
+ 
+Index: trunk/NEWS
+===================================================================
+--- trunk/NEWS	(révision 813)
++++ trunk/NEWS	(révision 846)
+@@ -1,3 +1,28 @@
++New in version 0.4.8 (not yet released)
++==============================
++* Only support standalone mozjs185 as mozilla js engine.
++  xulrunner being part of the now lightning fast moving firefox
++  is impossible to be tracked as a dependency and it is not
++  supported by Mozilla to be used in this scenario.
++* Support building with javascritpcoregtk 1.5
++  (got split out of webkitgtk).
++* Issues fixed:
++  - #166: Libproxy does not parse NO_PROXY correct when the line
++          contains spaces
++  - #164: If gconf's value is an empty list, pxgconf will make
++          /usr/bin/proxy wait forever
++  - #60: use lib js for embedded solutions
++  - #160: strdup and gethostbyname not declared on OSX 10.7
++  - #168: .pc file should be installed under OSX as well.
++  - #170: Also check for "Transfer-Encoding: chunked".
++  - #171: mozjs pacrunner: Fix parameters of dnsResolve_()
++  - #172: Allow to forcibly build pacrunner as module (-DBIPR={ON,OFF})
++  - #173: Libproxy doesn't build with gcc 4.7
++  - #147: Use ${CMAKE_DL_LIBS} instead of assuming libdl is correct.
++  - #176: python bindings: guard the destructor.
++  - #177: Speed up importing of libproxy in python.
++  - #179: CMAKE 2.8.8 does not define PKG_CONFIG_FOUND
++
+ New in version 0.4.7
+ ==============================
+ * Support/require xulrunner 2.0+
