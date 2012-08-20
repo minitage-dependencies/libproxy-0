@@ -6,3 +6,9 @@ sys
 bin
 parts
 
+.minitage
+sys/
+__minitage__part__tmp/
+*.pyc
+.installed.cfg
+*.pyc
